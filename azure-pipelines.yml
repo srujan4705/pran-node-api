@@ -1,0 +1,73 @@
+trigger:
+  branches:
+    include:
+      - main
+
+variables:
+  dockerRegistryServiceConnection: 'numbersacr-service-connection'
+  imageRepository: 'node-express-api'
+  containerRegistry: 'numbersacr.azurecr.io'
+  dockerfilePath: '$(Build.SourcesDirectory)/Dockerfile'
+  tag: '$(Build.BuildId)'
+  vmImageName: 'ubuntu-latest'
+
+stages:
+
+# =========================
+# BUILD STAGE
+# =========================
+- stage: Build
+  displayName: Build and Push
+  jobs:
+  - job: Build
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: Docker@2
+      displayName: Build and push image to ACR
+      inputs:
+        command: buildAndPush
+        repository: $(imageRepository)
+        dockerfile: $(dockerfilePath)
+        containerRegistry: $(dockerRegistryServiceConnection)
+        tags: |
+          $(tag)
+
+# =========================
+# DEPLOY STAGE
+# =========================
+- stage: Deploy
+  displayName: Deploy to VM
+  dependsOn: Build
+
+  jobs:
+  - job: DeployToVM
+    pool:
+      vmImage: $(vmImageName)
+
+    steps:
+    - task: SSH@0
+      displayName: Deploy Node API container
+      inputs:
+        sshEndpoint: 'innovave-vm-ssh'
+        runOptions: 'commands'
+        commands: |
+          echo "Authenticating with Managed Identity..."
+          az login --identity > /dev/null
+          az acr login --name numbersacr > /dev/null
+
+          echo "Pulling latest image..."
+          docker pull numbersacr.azurecr.io/node-express-api:$(Build.BuildId)
+
+          echo "Removing existing container if present..."
+          docker rm -f node-api 2>/dev/null || true
+
+          echo "Starting Node API container..."
+          docker run -d \
+            --name node-api \
+            --restart always \
+            -p 5001:5001 \
+            numbersacr.azurecr.io/node-express-api:$(Build.BuildId)
+
+          echo "Deployment successful."
+          docker ps
